@@ -1,0 +1,15 @@
+# Structure follows docs.genlayer.com/api-references/genlayer-test. NOT validated against a real install.
+networks:
+  default: localnet
+  localnet:
+    url: "http://127.0.0.1:4000/api"
+    leader_only: false
+  studionet: {}
+  testnet_asimov:
+    accounts:
+      - "${ACCOUNT_PRIVATE_KEY_1}"
+    from: "${ACCOUNT_PRIVATE_KEY_1}"
+paths:
+  contracts: "contracts"
+  artifacts: "artifacts"
+environment: ".env"

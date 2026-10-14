@@ -1,0 +1,3 @@
+# Official GenLayer testing toolchain (Python >= 3.12). Could not be installed in the authoring sandbox.
+genlayer-test
+pytest

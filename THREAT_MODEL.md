@@ -1,0 +1,27 @@
+# TrustGuard threat model and requirement mapping
+
+"Test" references use `tests/logic/test_trustguard_logic.py` (executed against a **fake SDK**) unless marked **[D]** (`tests/direct`, never run) or **[L]** (`tests/integration`, never run). A passing logic test shows the contract code behaves as designed under documented SDK semantics; it does **not** show on-chain behaviour.
+
+Trust boundaries: (1) callers are untrusted; (2) all evidence text is attacker-controlled; (3) the LLM and its output are untrusted until normalised; (4) validators/consensus are trusted only to the extent GenLayer guarantees.
+
+| # | Requirement / threat | Implementation | Enforced by | Test |
+|---|---|---|---|---|
+| 1 | Prompt injection in evidence | Rules first and immutable; evidence JSON-encoded inside digest-derived boundary (stripped from text); output schema-validated; LOW_RISK needs corroboration | code + LLM | `test_prompt_injection_is_data_not_instructions`, `test_injection_cannot_break_out_of_json_encoding`, `test_boundary_token_is_removed_from_evidence`, `test_injection_followed_by_model_is_still_caught_by_deterministic_guard`; real resistance only **[L]** |
+| 2 | Fabricated evidence / false claims | Evidence labelled unverified; reporters recorded; reporter-diversity rule for LOW_RISK; prompt demands corroboration | partly LLM | `test_low_risk_requires_multiple_items_and_reporters_and_confidence`, `test_submit_and_read_back` |
+| 3 | Replay / duplicate submissions | Reporter-independent evidence fingerprint; `evidence_seen`; new-evidence requirement for reassessment | code | `test_duplicate_evidence_rejected_across_reporters`, `test_reassessment_requires_new_evidence` |
+| 4 | Malformed input, oversized strings | Strict regex/length validation, control-char stripping, enum checks, no-throw on wrong types | code | `TestInputValidation.*`, `test_evidence_validation`, `test_max_length_inputs_accepted` |
+| 5 | Score / integer boundary errors | bool and fractional rejection, 0-100 check, contiguous bands asserted, band-consistency check | code | `test_score_boundaries`, `test_invalid_scores_and_malformed_output_leave_state_untouched`, `test_score_bands_are_contiguous_and_complete`, `test_band_for_score_rejects_out_of_range` |
+| 6 | Unauthorized updates | Owner-only metadata change; no ownership transfer; no admin | code | `TestAccessControl.*`; **[D]** `test_unauthorized_metadata_change_reverts` |
+| 7 | Duplicate artifact ids / collisions | Length-prefixed SHA-256 identity incl. exact version and digest; submitter excluded; PEP 503 normalisation; ASCII-only names | code | `TestIdentityAndCollisions.*`; **[D]** `test_duplicate_registration_reverts` |
+| 8 | Unbounded loops / storage growth | 40 evidence, 8 per reporter, 16 assessments, page size 20, bounded model output | code | `TestLimits.*`, `test_assessment_cap_is_enforced`, `test_oversized_model_output_is_bounded` |
+| 9 | Wrong assumptions about network access | Contract never fetches; prompt forbids claiming scans; URLs are references | code + prompt | `test_prompt_states_unverified_and_no_scan_claims`, `test_disclaimer_and_no_safe_class` |
+| 10 | Inconsistent AI judgments | Validators re-run independently; tolerance rule; fail-closed on disagreement; leader output re-validated | consensus + code | `test_validator_disagreement_rejected_and_close_agreement_accepted`, `test_equivalence_rules`; real agreement rate **[L]** |
+| 11 | Stale vulnerability information | `age_days`/`stale` computed deterministically and given to the model; reassessment possible | code + LLM | `test_stale_and_digest_mismatch_facts_are_computed_deterministically` |
+| 12 | Misleading safety/malware claims | No SAFE class; LOW_RISK downgrade; disclaimer in every assessment; `digest_status` marks digests unverified | code | `test_disclaimer_and_no_safe_class`, `test_higher_risk_is_never_softened`, `test_successful_registration` |
+| 13 | History tampering | Append-only keyed records; no edit/delete/override methods; owner powers exclude assessments; evidence-digest chain per assessment | code | `test_previous_assessment_is_preserved_and_linked`, `test_no_method_can_rewrite_or_delete_history`, `test_ownership_does_not_grant_power_over_assessments` |
+| 14 | DoS via excessive reassessment | Needs new evidence each time (bounded by evidence caps), 16-assessment cap, zero-evidence path costs no LLM | code | `test_reassessment_requires_new_evidence`, `test_assessment_cap_is_enforced`, `test_no_evidence_is_insufficient_without_calling_the_llm` |
+| 15 | Missing evidence treated as safe | Zero evidence -> deterministic INSUFFICIENT_EVIDENCE; INSUFFICIENT is its own state | code | `test_no_evidence_is_insufficient_without_calling_the_llm`, `test_insufficient_evidence_is_not_a_low_score` |
+| 16 | LLM/provider failure | Transaction reverts with no state change; retryable | runtime + code | `test_llm_exception_leaves_state_untouched_and_is_retryable` |
+
+## Residual risks (not eliminated)
+Evidence-cap crowding by multiple accounts; coordinated multi-reporter manipulation; model bias or error; validator collusion; first-registrant ownership (cannot be transferred); unverified real-runtime compatibility (see README "Verification status").
