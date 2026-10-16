@@ -19,14 +19,11 @@ Features removed to fit: ownership transfer, `get_contract_info`, `get_owner_inf
 
 | Item | Status |
 |---|---|
-| Contract logic | **Executed**: 74 `unittest` tests pass against a **fake** SDK (`tests/_fake_sdk`). |
-| Real GenLayer runtime (GenVM, storage typing, `hashlib`/`re`, decorators) | **NOT verified.** The SDK/`gltest` could not be installed where this was written. |
-| `tests/direct` (gltest Direct Mode, mocked LLM) | **Executed: 8 passed** (loads and runs under the real gltest Direct Mode; no real LLM, no validator consensus). |
-| `tests/integration` (real LLM validators) | Skeleton, **never run**. |
-| Deployment (Bradbury) | Deployed by the owner (see Deployment). Not independently verified. |
-| Real consensus, injection resistance, validator agreement | **Unknown** until live tests run. |
-
-Confirm on first real run: the `# { "Depends": ... }` pin (update to current); `gl.vm.UserError` (docs use two spellings); `Address.as_hex`; `hashlib`/`re`/`datetime.date` inside GenVM; public params `list[int]` and returns `dict`/`list[dict]`; `str.removeprefix` (Python 3.9+).
+| Contract logic | **Executed**: 78 `unittest` tests pass against a **fake** SDK (`tests/_fake_sdk`). Logic only, not the real runtime. |
+| `tests/direct` (gltest Direct Mode, mocked LLM) | **Executed: 8 passed.** Real gltest Direct Mode; the LLM is mocked and there is no validator consensus. |
+| Bradbury testnet (real LLM validators) | **Executed by the deployer**: register, evidence from two wallets, assessment, and a reassessment after new evidence all succeeded on one test artifact. Details and limits in [TESTING.md](TESTING.md). |
+| `tests/integration` | Skeleton, never run. The live runs above were done by hand through the Bradbury explorer. |
+| Not established | Behaviour across many artifacts, validator agreement rate, resistance to real prompt-injection attempts, and whether the leader retry was ever needed. |
 
 ## How it works
 
@@ -105,13 +102,11 @@ c.get_current_assessment(args=[aid]).call()
 **New evidence + reassess:** `submit_evidence(...)` (optionally `assessment_refs=[n]`), then `assess_artifact(aid, "why")`. Earlier assessments stay readable through `get_assessment_history`.
 
 ## Deployment
-- **Network:** GenLayer Bradbury testnet (as reported by the deployer)
-- **Contract address:** `0x0ece7f3eaD96856477571a021c6939037c19Bd79`
-- **Deployed file:** `contracts/trustguard.py` (constructor takes no arguments, ~18.5 KB)
+- **Network:** GenLayer Bradbury testnet
+- **Current contract:** `0xCa07AFeCa830987c572f2fE3A0802044433B153e` (this repo's `contracts/trustguard.py`, 18,878 bytes, constructor takes no arguments)
+- **Earlier deployment:** `0x0ece7f3eaD96856477571a021c6939037c19Bd79` was an earlier version without the leader retry. A reassessment on it failed (see TESTING.md). It is kept only as a record.
 
-Deployment succeeded according to the deployer. The author of this repo did **not** independently verify the deployment, and a full on-chain `register -> submit_evidence -> assess_artifact` run with real validators has **not** been recorded here yet. Treat real-LLM behaviour as untested until it is.
-
-To redeploy, use the current GenLayer docs for the network selector, faucet/test tokens and CLI flags. Re-run `wc -c contracts/trustguard.py` after any change; Bradbury has a size limit near 20 KB.
+Bradbury has a size limit near 20 KB. Re-run `wc -c contracts/trustguard.py` after any change. For network selection, faucet and CLI flags, use the current GenLayer docs.
 
 ## Verifying digests independently
 A SHA-256 only proves bytes match a *trusted expected* digest, not safety. Get the expected digest from an independent trusted channel, hash your download yourself (`sha256sum f`, `shasum -a 256 f`, or `Get-FileHash -Algorithm SHA256 f`) and compare. The digest stored here is **user-supplied and unverified**.
@@ -126,9 +121,9 @@ A SHA-256 only proves bytes match a *trusted expected* digest, not safety. Get t
 - Records as JSON strings are less strictly typed than the archived full version.
 - Real-runtime compatibility is unverified (see above).
 
-
 ## Recorded results
-- `python tests/logic/test_trustguard_logic.py`: 74 passed (fake SDK, logic only).
-- `gltest tests/direct -v`: 8 passed (Direct Mode, mocked LLM). Covers registration, duplicate/invalid input reverts, owner-only update, pagination bounds, no-evidence assessment, reassessment history with a mocked LLM.
-- On-chain (Bradbury): contract deployed at the address above. A full live `register -> submit_evidence -> assess_artifact -> reassess` run with real LLM validators is **not recorded here**.
+- `python tests/logic/test_trustguard_logic.py`: 78 passed (fake SDK, logic only).
+- `gltest tests/direct -v`: 8 passed (Direct Mode, mocked LLM).
+- Bradbury, contract `0xCa07...153e`, one test artifact: assessment 0 (1 evidence item) gave HIGH_RISK, score 45, confidence LOW; after a second wallet added evidence, assessment 1 (2 items) gave HIGH_RISK, score 65, confidence MEDIUM. Both are `llm_consensus`, the first record was preserved unchanged, and the second records `previous_classification: HIGH_RISK`. See [TESTING.md](TESTING.md).
 - Known weak test: `test_malformed_llm_output_reverts` only checks that some revert happens.
+- Model wording such as "independent reports" is the LLM's phrasing. The contract cannot verify independence; all reporter claims are stored as unverified.
