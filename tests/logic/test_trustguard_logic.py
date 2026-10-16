@@ -868,6 +868,50 @@ class TestFailurePaths(Base):
         with self.assertRaises(gl.vm.UserError):
             self.assess(aid)
 
+    def test_leader_retries_once_after_an_invalid_model_reply(self):
+        aid = self.reg()
+        self.two_reporters(aid)
+        replies = iter(["not json at all", json.dumps(verdict(30, confidence="HIGH")), json.dumps(verdict(30, confidence="HIGH"))])
+        self.llm_answer = lambda: next(replies)
+        self.assess(aid)
+        self.assertEqual(self.c.get_risk(aid)["classification"], "MEDIUM_RISK")
+        self.assertIn("previous reply was rejected", self.prompts[1])      # the retry tells the model why
+        self.assertNotIn("previous reply was rejected", self.prompts[0])
+
+    def test_band_mismatch_is_corrected_by_retry_not_accepted(self):
+        aid = self.reg()
+        self.two_reporters(aid)
+        bad = json.dumps({**verdict(40), "classification": "MEDIUM_RISK"})  # score 40 is HIGH, not MEDIUM
+        replies = iter([bad, json.dumps(verdict(40, confidence="HIGH")), json.dumps(verdict(40, confidence="HIGH"))])
+        self.llm_answer = lambda: next(replies)
+        self.assess(aid)
+        self.assertEqual(self.c.get_risk(aid)["classification"], "HIGH_RISK")
+
+    def test_two_invalid_replies_fail_closed_with_clear_code(self):
+        aid = self.reg()
+        self.two_reporters(aid)
+        self.llm_answer = "still not json"
+        self.assertFails("TG_LLM_FORMAT", self.assess, aid)
+        self.assertEqual(self.llm_calls, 2)                                  # exactly one retry, no loop
+        self.assertEqual(self.c.get_artifact(aid)["assessment_count"], 0)
+
+    def test_reassessment_after_new_evidence_from_a_second_reporter(self):
+        # mirrors the on-chain scenario: 2 items from one wallet, assess, then a 3rd item from a second wallet
+        aid = self.reg()
+        self.sender(ALICE)
+        self.ev(aid, description="Advisory reports the install script contacts an unknown host.")
+        self.ev(aid, evidence_type="MAINTAINER_CLAIM", source_ref="", description="Maintainer claims the release is reproducible and clean.")
+        self.llm_answer = json.dumps(verdict(35, confidence="LOW", reassessment_recommended=True))
+        self.assess(aid, "first live test")
+        self.sender(BOB)
+        self.ev(aid, description="Unverified report of an unexpected outbound network request during install.")
+        self.llm_answer = json.dumps(verdict(55, confidence="MEDIUM"))
+        self.assess(aid, "reassessment with independent reporter evidence")
+        hist = self.ahp(aid, 0, 10)
+        self.assertEqual([h["classification"] for h in hist], ["MEDIUM_RISK", "HIGH_RISK"])
+        self.assertEqual([h["evidence_count_used"] for h in hist], [2, 3])
+        self.assertEqual(hist[1]["previous_classification"], "MEDIUM_RISK")
+
     def test_failed_writes_do_not_change_counts(self):
         aid = self.reg()
         self.ev(aid)

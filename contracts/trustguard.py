@@ -315,7 +315,13 @@ class TrustGuard(gl.Contract):
             prompt = _prompt(art, evs, "TG" + a["evidence_digest"][:24], now)
 
             def leader_fn():
-                return _norm(gl.nondet.exec_prompt(prompt, response_format="json"), n)
+                note = ""
+                for _ in range(2):
+                    try:
+                        return _norm(gl.nondet.exec_prompt(prompt + note, response_format="json"), n)
+                    except Exception as e:
+                        note = f"\n\nYour previous reply was rejected ({str(e)[:120]}). Reply again with ONE valid JSON object exactly as specified in the rules."
+                raise gl.vm.UserError("[TG_LLM_FORMAT] model output invalid after retry")
 
             def validator_fn(r) -> bool:
                 if not isinstance(r, gl.vm.Return):
