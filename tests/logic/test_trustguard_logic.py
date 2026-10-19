@@ -347,7 +347,7 @@ class TestAssessment(Base):
                 self.llm_answer = json.dumps(verdict(score, confidence="HIGH"))
                 self.assess(aid)
                 self.assertEqual(self.c.get_risk(aid)["classification"], expected)
-                self.assertEqual(self.c.get_risk(aid)["score"], score)
+                self.assertEqual(self.c.get_risk(aid)["score"], tg.CANON[expected])
 
     def test_band_for_score_rejects_out_of_range(self):
         for s in (-1, 101):
@@ -851,26 +851,25 @@ class TestFailurePaths(Base):
                 self.assertEqual(self.c.get_artifact(aid)["assessment_count"], 0)
                 self.assertEqual(self.c.get_risk(aid)["classification"], "UNASSESSED")
 
-    def test_same_category_needs_scores_within_tolerance_and_leader_score_is_stored(self):
+    def test_same_category_different_raw_scores_agree_and_canonical_score_is_stored(self):
         aid = self.reg()
         self.two_reporters(aid)
-        with self.assertRaises(gl.vm.UserError):
-            self._run_pair(aid, verdict(30, confidence="HIGH"), verdict(36, confidence="HIGH"))   # same band, 6 apart
-        self.assertEqual(self.c.get_artifact(aid)["assessment_count"], 0)
-        self._run_pair(aid, verdict(33, confidence="HIGH"), verdict(37, confidence="HIGH"))       # same band, 4 apart
+        self._run_pair(aid, verdict(22, confidence="HIGH"), verdict(38, confidence="HIGH"))
         risk = self.c.get_risk(aid)
-        self.assertEqual((risk["classification"], risk["score"]), ("MEDIUM_RISK", 33))
-        self.assertLessEqual(abs(risk["score"] - 37), tg.TOL)
+        self.assertEqual((risk["classification"], risk["score"]), ("MEDIUM_RISK", tg.CANON["MEDIUM_RISK"]))
 
-    def test_stored_score_never_differs_from_a_validators_own_score_by_more_than_tolerance(self):
-        self.assertEqual(tg.TOL, 5)
+    def test_persisted_score_is_identical_for_every_validator_whenever_they_agree(self):
         for ls in range(0, 101):
             for vs in range(0, 101):
                 a = tg._norm(verdict(ls, confidence="HIGH"), 2)
                 b = tg._norm(verdict(vs, confidence="HIGH"), 2)
                 if tg._eq(a, b):
+                    self.assertEqual(a["score"], b["score"])
                     self.assertEqual(tg._band(ls), tg._band(vs))
-                    self.assertLessEqual(abs(ls - vs), tg.TOL)
+                else:
+                    self.assertNotEqual(tg._band(ls), tg._band(vs))
+                self.assertEqual(a["score"], tg.CANON[a["classification"]])
+                self.assertEqual(tg._band(a["score"]), a["classification"])
 
     def test_validators_bind_the_final_category_after_the_low_risk_guard(self):
         aid = self.reg()
@@ -903,8 +902,7 @@ class TestFailurePaths(Base):
         n = lambda sc, c=None: tg._norm(verdict(sc, c, confidence="HIGH"), 2)
         eq = tg._eq
         self.assertTrue(eq(n(30), n(30)))
-        self.assertTrue(eq(n(30), n(35)))                  # same category, within tolerance
-        self.assertFalse(eq(n(30), n(36)))                 # same category, beyond tolerance
+        self.assertTrue(eq(n(22), n(38)))                  # same category: same canonical score
         self.assertFalse(eq(n(39), n(40)))                 # adjacent categories never agree
         self.assertFalse(eq(n(10), n(60)))
         self.assertFalse(eq(n(5), n(0, "INSUFFICIENT_EVIDENCE")))

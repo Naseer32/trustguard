@@ -15,7 +15,8 @@ INS = "INSUFFICIENT_EVIDENCE"
 BANDS = (("LOW_RISK", 0, 19), ("MEDIUM_RISK", 20, 39), ("HIGH_RISK", 40, 69), ("CRITICAL_RISK", 70, 100))
 ORDER = [b[0] for b in BANDS]
 MAX_EV, MAX_REP, MAX_AS, MAX_PAGE = 40, 8, 16, 20
-STALE, TOL = 365, 5
+STALE = 365
+CANON = {"LOW_RISK": 10, "MEDIUM_RISK": 30, "HIGH_RISK": 55, "CRITICAL_RISK": 85}
 FLOATING = ("latest", "next", "head", "master", "main", "trunk", "stable", "nightly", "canary", "dev", "develop", "snapshot")
 DISC = "Risk signal from submitted evidence; not a guarantee of safety. No scan or execution was performed."
 
@@ -144,7 +145,7 @@ def _norm(raw, n):
     else:
         if _band(s) != c:
             raise ValueError("score does not match band")
-        ok = True
+        s, ok = CANON[c], True
     conf, ex, rec, ec = raw.get("confidence"), raw.get("explanation"), raw.get("reassessment_recommended"), raw.get("evidence_considered")
     if conf not in ("LOW", "MEDIUM", "HIGH") or not isinstance(ex, str) or not isinstance(rec, bool) or not isinstance(ec, list):
         raise ValueError("bad confidence/explanation/recommendation/evidence_considered")
@@ -167,11 +168,9 @@ def _uniq(ids, n):
 
 
 def _eq(a, b):
-    """Both inputs are FINAL results (after the LOW_RISK guard). The persisted category must match exactly;
-    the persisted score must be within TOL of the validator's own score (same category, so never a different band)."""
-    if a["classification"] != b["classification"]:
-        return False
-    return a["classification"] == INS or abs(a["score"] - b["score"]) <= TOL
+    """Both inputs are FINAL results (after the LOW_RISK guard). The persisted category must be identical, and the
+    persisted score is a fixed function of the category (CANON), so it is bound exactly as well."""
+    return a["classification"] == b["classification"] and a["score"] == b["score"]
 
 
 def _guard(r, n, who):
@@ -184,7 +183,7 @@ def _guard(r, n, who):
         return r
     w = "; ".join(why)
     return {**r, "classification": INS, "score": 0, "score_applicable": False,
-            "explanation": f"Downgraded from LOW_RISK (model score {r['score']}): {w}. " + r["explanation"][:1200],
+            "explanation": f"Downgraded from LOW_RISK: {w}. " + r["explanation"][:1200],
             "warning_indicators": (r["warning_indicators"] + ["LOW_RISK withheld: " + w])[:10],
             "missing_information": (r["missing_information"] + ["More independent, corroborating evidence"])[:10],
             "reassessment_recommended": True}

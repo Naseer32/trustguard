@@ -8,7 +8,7 @@ A GenLayer Intelligent Contract that keeps an **auditable, evidence-based regist
 
 | File | Size | Use |
 |---|---|---|
-| `contracts/trustguard.py` | ~19.1 KB (19,057 bytes) | **Deploy this.** Sized to fit Bradbury's ~20 KB limit. |
+| `contracts/trustguard.py` | ~19.1 KB (19,039 bytes) | **Deploy this.** Sized to fit Bradbury's ~20 KB limit. |
 | `archive/trustguard_full.py` | ~44 KB | Reference only (typed storage, ownership transfer, more views). Too big for Bradbury. Not maintained. |
 
 Check size any time: `wc -c contracts/trustguard.py`. The "~20 KB" limit is as reported by the project owner; **how Bradbury measures it (bytes, KiB, after processing) is unverified**, so keep a safety margin. Do not add features without re-measuring.
@@ -31,7 +31,7 @@ Features removed to fit: ownership transfer, `get_contract_info`, `get_owner_inf
 
 **Evidence.** Bounded fields, control characters stripped, reporter-independent fingerprint (replay/duplicate blocked), rolling `evidence_digest` recorded in every assessment. Limits: 40 per artifact, 8 per reporter per artifact.
 
-**Assessment** (`assess_artifact`): requires new evidence since the last assessment (first one always allowed); max 16 per artifact. No evidence -> deterministic `INSUFFICIENT_EVIDENCE`, no LLM call. Otherwise the leader calls `gl.nondet.exec_prompt(..., response_format="json")`; each validator independently re-runs it. Both sides compute the **final** result (after the `LOW_RISK` guard below) and a validator accepts only if the persisted category is **identical** and the persisted score is within **5 points** of the validator's own score (same category, so never a different band). `INSUFFICIENT_EVIDENCE` only agrees with `INSUFFICIENT_EVIDENCE`. Adjacent categories never agree, even with close scores. Output is strictly validated (JSON object, score int 0-100 matching its band, bounded lists) or the transaction fails with no state change. A deterministic guard turns `LOW_RISK` into `INSUFFICIENT_EVIDENCE` unless there are 2+ items from 2+ reporters and confidence is not `LOW`. Higher-risk verdicts are never softened.
+**Assessment** (`assess_artifact`): requires new evidence since the last assessment (first one always allowed); max 16 per artifact. No evidence -> deterministic `INSUFFICIENT_EVIDENCE`, no LLM call. Otherwise the leader calls `gl.nondet.exec_prompt(..., response_format="json")`; each validator independently re-runs it. Both sides compute the **final** result (after the `LOW_RISK` guard below) and a validator accepts only if the persisted category and the persisted score are both **identical** to its own. The persisted score is a fixed canonical value for the category (LOW 10, MEDIUM 30, HIGH 55, CRITICAL 85), so it is bound exactly; the model's raw 0-100 number is only checked against its band and is not stored. `INSUFFICIENT_EVIDENCE` only agrees with `INSUFFICIENT_EVIDENCE`. Adjacent categories never agree, even with close scores. Output is strictly validated (JSON object, score int 0-100 matching its band, bounded lists) or the transaction fails with no state change. A deterministic guard turns `LOW_RISK` into `INSUFFICIENT_EVIDENCE` unless there are 2+ items from 2+ reporters and confidence is not `LOW`. Higher-risk verdicts are never softened.
 
 **Enforced by code:** validation, identity, duplicates, limits, access control, append-only history, band consistency, the LOW_RISK guard, staleness/digest-match facts. **Depends on the LLM:** score, class, explanation, mitigations, judging reliability and contradictions.
 
@@ -103,7 +103,8 @@ c.get_current_assessment(args=[aid]).call()
 
 ## Deployment
 - **Network:** GenLayer Bradbury testnet
-- **Current contract:** `0xE3Bf28739F5C32908E131359d24254bb96C99e0e`, deployed from this repo's `contracts/trustguard.py` (19,057 bytes, constructor takes no arguments). The source in this repo is the version the deployer reports deploying; the deployment itself was not independently checked against the source.
+- **Current contract:** `0xC571C9cbd33ABFF7AD1dB044a027c51E42fCC88c`, deployed from this repo's `contracts/trustguard.py` (19,039 bytes, constructor takes no arguments) with exact category and canonical-score binding. The source in this repo is the version the deployer reports deploying; the deployment itself was not independently checked against the source.
+- **Superseded (score within 5 points rule):** `0xE3Bf28739F5C32908E131359d24254bb96C99e0e`.
 - **Earlier deployments (records only, superseded):** `0x0ece7f3eaD96856477571a021c6939037c19Bd79` (leader called the LLM once; a reassessment failed on it) and `0xCa07AFeCa830987c572f2fE3A0802044433B153e` (added a leader retry, but validators accepted adjacent risk categories). Neither matches the current source.
 
 Bradbury has a size limit near 20 KB. Re-run `wc -c contracts/trustguard.py` after any change; the margin is now small. For network selection, faucet and CLI flags, use the current GenLayer docs.
@@ -117,7 +118,7 @@ A SHA-256 only proves bytes match a *trusted expected* digest, not safety. Get t
 - After 16 assessments an artifact cannot be reassessed.
 - Staleness (365 days) is a heuristic; vulnerability data may be outdated. Time is the transaction datetime.
 - First registrant owns the record permanently (ownership affects only `source_ref`).
-- Consensus binds the persisted category exactly and the persisted score to within 5 points inside that category. The leader's score is the one stored, so it can differ from a validator's own score by up to 5. Near band edges validators may fail to agree, in which case the transaction is not accepted and can be retried.
+- Consensus binds the persisted category and the persisted score exactly. The stored score is canonical per category, so it carries no finer resolution than the band. Free-text fields (explanation, warning indicators, missing information, mitigations), `evidence_considered` and `reassessment_recommended` are leader-authored: bounded and sanitised, but not validator-bound. Near band edges validators may fail to agree, in which case the transaction is not accepted and can be retried.
 - Free-text fields (`explanation`, `warning_indicators`, `missing_information`, `mitigations`) and `reassessment_recommended`, `evidence_considered` are written by the leader, bounded and sanitised, but not bound by validators. Treat them as advisory. `confidence` affects the stored category only through the `LOW_RISK` guard, which both sides apply.
 - Records as JSON strings are less strictly typed than the archived full version.
 - Real-runtime compatibility is unverified (see above).
@@ -125,6 +126,6 @@ A SHA-256 only proves bytes match a *trusted expected* digest, not safety. Get t
 ## Recorded results
 - `python tests/logic/test_trustguard_logic.py`: 83 passed (fake SDK, logic only).
 - `gltest tests/direct -v`: 8 passed (Direct Mode, mocked LLM).
-- Bradbury, current contract `0xE3Bf...9e0e`, one test artifact: assessment 0 (1 evidence item) gave MEDIUM_RISK, score 35; after more evidence, assessment 1 (2 items) gave HIGH_RISK, score 65 with `previous_classification: MEDIUM_RISK`. Both are `llm_consensus` and assessment 0 was preserved unchanged. See [TESTING.md](TESTING.md). One artifact, one run: this does not measure validator agreement rates.
+- Bradbury, current contract `0xC571...C88c`, one test artifact: assessment 0 (1 evidence item) gave HIGH_RISK, score 55; after more evidence, assessment 1 (2 items) gave HIGH_RISK, score 55 with `previous_classification: HIGH_RISK`. The earlier superseded contract `0xE3Bf...9e0e` gave MEDIUM_RISK 35 then HIGH_RISK 65. Both are `llm_consensus` and assessment 0 was preserved unchanged. See [TESTING.md](TESTING.md). One artifact, one run: this does not measure validator agreement rates.
 - Known weak test: `test_malformed_llm_output_reverts` only checks that some revert happens.
 - Model wording such as "independent reports" is the LLM's phrasing. The contract cannot verify independence; all reporter claims are stored as unverified.
