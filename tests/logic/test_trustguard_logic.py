@@ -836,27 +836,77 @@ class TestFailurePaths(Base):
         self.assess(aid)  # same call succeeds afterwards: nothing was consumed
         self.assertEqual(self.c.get_artifact(aid)["assessment_count"], 1)
 
-    def test_validator_disagreement_rejected_and_close_agreement_accepted(self):
+    def _run_pair(self, aid, leader_reply, validator_reply):
+        replies = iter([json.dumps(leader_reply), json.dumps(validator_reply)])
+        self.llm_answer = lambda: next(replies)
+        self.assess(aid)
+
+    def test_adjacent_bands_are_rejected_even_when_scores_are_close(self):
         aid = self.reg()
         self.two_reporters(aid)
-        answers = iter([json.dumps(verdict(30)), json.dumps(verdict(95))])
-        self.llm_answer = lambda: next(answers)
-        with self.assertRaises(gl.vm.UserError):
-            self.assess(aid)
-        self.assertEqual(self.c.get_artifact(aid)["assessment_count"], 0)
+        for leader, validator in [(39, 40), (38, 45), (41, 38), (19, 20), (69, 70)]:
+            with self.subTest(leader=leader, validator=validator):
+                with self.assertRaises(gl.vm.UserError):
+                    self._run_pair(aid, verdict(leader, confidence="HIGH"), verdict(validator, confidence="HIGH"))
+                self.assertEqual(self.c.get_artifact(aid)["assessment_count"], 0)
+                self.assertEqual(self.c.get_risk(aid)["classification"], "UNASSESSED")
 
-        answers = iter([json.dumps(verdict(38)), json.dumps(verdict(45))])  # adjacent bands, 7 apart
-        self.llm_answer = lambda: next(answers)
-        self.assess(aid)
-        self.assertEqual(self.c.get_risk(aid)["classification"], "MEDIUM_RISK")  # leader's verdict is recorded
+    def test_same_category_needs_scores_within_tolerance_and_leader_score_is_stored(self):
+        aid = self.reg()
+        self.two_reporters(aid)
+        with self.assertRaises(gl.vm.UserError):
+            self._run_pair(aid, verdict(30, confidence="HIGH"), verdict(36, confidence="HIGH"))   # same band, 6 apart
+        self.assertEqual(self.c.get_artifact(aid)["assessment_count"], 0)
+        self._run_pair(aid, verdict(33, confidence="HIGH"), verdict(37, confidence="HIGH"))       # same band, 4 apart
+        risk = self.c.get_risk(aid)
+        self.assertEqual((risk["classification"], risk["score"]), ("MEDIUM_RISK", 33))
+        self.assertLessEqual(abs(risk["score"] - 37), tg.TOL)
+
+    def test_stored_score_never_differs_from_a_validators_own_score_by_more_than_tolerance(self):
+        self.assertEqual(tg.TOL, 5)
+        for ls in range(0, 101):
+            for vs in range(0, 101):
+                a = tg._norm(verdict(ls, confidence="HIGH"), 2)
+                b = tg._norm(verdict(vs, confidence="HIGH"), 2)
+                if tg._eq(a, b):
+                    self.assertEqual(tg._band(ls), tg._band(vs))
+                    self.assertLessEqual(abs(ls - vs), tg.TOL)
+
+    def test_validators_bind_the_final_category_after_the_low_risk_guard(self):
+        aid = self.reg()
+        self.two_reporters(aid)
+        # leader LOW but unsure (guard -> INSUFFICIENT_EVIDENCE) vs validator LOW and confident (stays LOW_RISK)
+        with self.assertRaises(gl.vm.UserError):
+            self._run_pair(aid, verdict(5, confidence="LOW"), verdict(5, confidence="HIGH"))
+        self.assertEqual(self.c.get_artifact(aid)["assessment_count"], 0)
+        # both unsure -> both downgraded -> agree on INSUFFICIENT_EVIDENCE
+        self._run_pair(aid, verdict(5, confidence="LOW"), verdict(10, confidence="LOW"))
+        self.assertEqual(self.c.get_risk(aid)["classification"], "INSUFFICIENT_EVIDENCE")
+
+    def test_insufficient_evidence_only_agrees_with_insufficient_evidence(self):
+        aid = self.reg()
+        self.two_reporters(aid)
+        with self.assertRaises(gl.vm.UserError):
+            self._run_pair(aid, verdict(0, "INSUFFICIENT_EVIDENCE"), verdict(30, confidence="HIGH"))
+        with self.assertRaises(gl.vm.UserError):
+            self._run_pair(aid, verdict(30, confidence="HIGH"), verdict(0, "INSUFFICIENT_EVIDENCE"))
+
+    def test_leader_that_skips_the_low_risk_guard_is_rejected(self):
+        aid = self.reg()
+        self.ev(aid)                                     # one item, one reporter: LOW_RISK must be withheld
+        raw_low = tg._norm(verdict(5, confidence="HIGH"), 1)
+        mine = tg._guard(tg._norm(verdict(5, confidence="HIGH"), 1), 1, 1)
+        self.assertEqual(mine["classification"], "INSUFFICIENT_EVIDENCE")
+        self.assertFalse(tg._eq(raw_low, mine))          # an unguarded leader value cannot match a guarded validator
 
     def test_equivalence_rules(self):
-        n = lambda s, c=None: tg._norm(verdict(s, c), 2)
+        n = lambda sc, c=None: tg._norm(verdict(sc, c, confidence="HIGH"), 2)
         eq = tg._eq
         self.assertTrue(eq(n(30), n(30)))
-        self.assertTrue(eq(n(39), n(41)))
-        self.assertFalse(eq(n(10), n(60)))                 # two bands apart
-        self.assertFalse(eq(n(19), n(36)))                 # adjacent but > tolerance
+        self.assertTrue(eq(n(30), n(35)))                  # same category, within tolerance
+        self.assertFalse(eq(n(30), n(36)))                 # same category, beyond tolerance
+        self.assertFalse(eq(n(39), n(40)))                 # adjacent categories never agree
+        self.assertFalse(eq(n(10), n(60)))
         self.assertFalse(eq(n(5), n(0, "INSUFFICIENT_EVIDENCE")))
         self.assertTrue(eq(n(0, "INSUFFICIENT_EVIDENCE"), n(50, "INSUFFICIENT_EVIDENCE")))
 

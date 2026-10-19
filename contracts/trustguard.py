@@ -15,7 +15,7 @@ INS = "INSUFFICIENT_EVIDENCE"
 BANDS = (("LOW_RISK", 0, 19), ("MEDIUM_RISK", 20, 39), ("HIGH_RISK", 40, 69), ("CRITICAL_RISK", 70, 100))
 ORDER = [b[0] for b in BANDS]
 MAX_EV, MAX_REP, MAX_AS, MAX_PAGE = 40, 8, 16, 20
-STALE, TOL = 365, 15
+STALE, TOL = 365, 5
 FLOATING = ("latest", "next", "head", "master", "main", "trunk", "stable", "nightly", "canary", "dev", "develop", "snapshot")
 DISC = "Risk signal from submitted evidence; not a guarantee of safety. No scan or execution was performed."
 
@@ -167,10 +167,11 @@ def _uniq(ids, n):
 
 
 def _eq(a, b):
-    x, y = a["classification"], b["classification"]
-    if x == INS or y == INS:
-        return x == y
-    return abs(ORDER.index(x) - ORDER.index(y)) <= 1 and abs(a["score"] - b["score"]) <= TOL
+    """Both inputs are FINAL results (after the LOW_RISK guard). The persisted category must match exactly;
+    the persisted score must be within TOL of the validator's own score (same category, so never a different band)."""
+    if a["classification"] != b["classification"]:
+        return False
+    return a["classification"] == INS or abs(a["score"] - b["score"]) <= TOL
 
 
 def _guard(r, n, who):
@@ -318,7 +319,7 @@ class TrustGuard(gl.Contract):
                 note = ""
                 for _ in range(2):
                     try:
-                        return _norm(gl.nondet.exec_prompt(prompt + note, response_format="json"), n)
+                        return _guard(_norm(gl.nondet.exec_prompt(prompt + note, response_format="json"), n), n, len(who))
                     except Exception as e:
                         note = f"\n\nYour previous reply was rejected ({str(e)[:120]}). Reply again with ONE valid JSON object exactly as specified in the rules."
                 raise gl.vm.UserError("[TG_LLM_FORMAT] model output invalid after retry")
@@ -331,7 +332,7 @@ class TrustGuard(gl.Contract):
                 except Exception:
                     return False
 
-            res = _guard(_norm(gl.vm.run_nondet_unsafe(leader_fn, validator_fn), n), n, len(who))
+            res = _norm(gl.vm.run_nondet_unsafe(leader_fn, validator_fn), n)
             method = "llm_consensus"
         self.assessments[f"{artifact_id}:{seq}"] = json.dumps({
             **res, "artifact_id": artifact_id, "sequence": seq, "previous_classification": a["current_classification"],
