@@ -1,131 +1,55 @@
-# TrustGuard (lite)
+# TrustGuard v2
 
-A GenLayer Intelligent Contract that keeps an **auditable, evidence-based registry of software-supply-chain risk assessments** (npm/Python packages, Git repos, smart-contract dependencies, AI models, datasets, build artifacts).
+TrustGuard is an evidence-based supply-chain risk registry on GenLayer. This repository holds the Intelligent Contract and the web app that reads and writes it.
 
-> **An assessment is a risk signal from submitted evidence, not a guarantee of safety.** TrustGuard never downloads, executes or malware-scans anything. `LOW_RISK` means "the submitted evidence does not indicate meaningful risk", never "safe".
+- Contract: [`contracts/trustguard.py`](contracts/trustguard.py), deployed on GenLayer Bradbury at `0xC571C9cbd33ABFF7AD1dB044a027c51E42fCC88c`.
+- Web app: [`frontend/`](frontend/), a React + Vite interface for the same contract and address.
 
-## Two versions
+## How the two fit together
 
-| File | Size | Use |
-|---|---|---|
-| `contracts/trustguard.py` | ~19.1 KB (19,039 bytes) | **Deploy this.** Sized to fit Bradbury's ~20 KB limit. |
-| `archive/trustguard_full.py` | ~44 KB | Reference only (typed storage, ownership transfer, more views). Too big for Bradbury. Not maintained. |
+The web app calls the deployed contract through `genlayer-js`. It reads artifacts, evidence and assessments with the contract's view methods (`list_artifact_ids`, `get_artifact`, `get_current_assessment`, `get_assessment_history`, `get_evidence_page`, `compute_artifact_id`). With a browser wallet it calls the write methods (`register_artifact`, `submit_evidence`, `assess_artifact`). The contract address is set in `frontend/src/config.js` and can be overridden with `VITE_CONTRACT_ADDRESS`. The app changes no contract logic.
 
-Check size any time: `wc -c contracts/trustguard.py`. The "~20 KB" limit is as reported by the project owner; **how Bradbury measures it (bytes, KiB, after processing) is unverified**, so keep a safety margin. Do not add features without re-measuring.
+## What the contract does
 
-Features removed to fit: ownership transfer, `get_contract_info`, `get_owner_info`, `is_registered`, single-item `get_evidence`/`get_assessment` (use the paged views with `limit=1`), typed storage dataclasses (records are now JSON strings). Ownership is fixed to the registrant.
+- Registers artifacts (packages, repositories, AI models, build artifacts) under a deterministic id.
+- Stores evidence as unverified claims, with a replay block and per-reporter limits.
+- Produces LLM risk assessments through GenLayer validators. Every validator re-runs the assessment and accepts only if the persisted category and the persisted score are identical to its own. The stored score is a fixed value per category, so it is bound exactly.
+- Keeps an append-only assessment history. There is no admin or override.
 
-## Verification status (read first)
+The explanation and list fields of an assessment are written by the leader validator. They are bounded and sanitised, but validators do not bind them. This is stated in the app and in the documents below.
 
-| Item | Status |
+## Repository layout
+
+| Path | Content |
 |---|---|
-| Contract logic | **Executed**: 83 `unittest` tests pass against a **fake** SDK (`tests/_fake_sdk`). Logic only, not the real runtime. |
-| `tests/direct` (gltest Direct Mode, mocked LLM) | **Executed: 8 passed.** Real gltest Direct Mode; the LLM is mocked and there is no validator consensus. |
-| Bradbury testnet (real LLM validators) | **Executed by the deployer on the current contract**: an assessment and a reassessment after new evidence both succeeded on one test artifact. Details and limits in [TESTING.md](TESTING.md). |
-| `tests/integration` | Skeleton, never run. The live runs above were done by hand through the Bradbury explorer. |
-| Not established | Behaviour across many artifacts, validator agreement rate, resistance to real prompt-injection attempts, and whether the leader retry was ever needed. |
+| `contracts/trustguard.py` | The Intelligent Contract |
+| `frontend/` | Web app (React + Vite) |
+| `tests/` | Logic tests (fake SDK), Direct Mode tests, integration skeleton |
+| `CONTRACT.md` | Detailed contract documentation and verification status |
+| `THREAT_MODEL.md` | Threats and how each is handled |
+| `TESTING.md` | What was observed on Bradbury, and its limits |
 
-## How it works
+## Run the web app
 
-**Identity.** `artifact_id = "tg1-" + SHA-256(length-prefixed(type, ecosystem, name, exact version, digest))`. Submitter and URL are not part of identity, so the same release cannot be registered twice. Python names are PEP 503-normalised; names are ASCII-only. Registering the same release with vs. without a digest gives two different artifacts. The id is **not returned reliably by a write transaction**, so get it from `compute_artifact_id(...)`.
-
-**Evidence.** Bounded fields, control characters stripped, reporter-independent fingerprint (replay/duplicate blocked), rolling `evidence_digest` recorded in every assessment. Limits: 40 per artifact, 8 per reporter per artifact.
-
-**Assessment** (`assess_artifact`): requires new evidence since the last assessment (first one always allowed); max 16 per artifact. No evidence -> deterministic `INSUFFICIENT_EVIDENCE`, no LLM call. Otherwise the leader calls `gl.nondet.exec_prompt(..., response_format="json")`; each validator independently re-runs it. Both sides compute the **final** result (after the `LOW_RISK` guard below) and a validator accepts only if the persisted category and the persisted score are both **identical** to its own. The persisted score is a fixed canonical value for the category (LOW 10, MEDIUM 30, HIGH 55, CRITICAL 85), so it is bound exactly; the model's raw 0-100 number is only checked against its band and is not stored. `INSUFFICIENT_EVIDENCE` only agrees with `INSUFFICIENT_EVIDENCE`. Adjacent categories never agree, even with close scores. Output is strictly validated (JSON object, score int 0-100 matching its band, bounded lists) or the transaction fails with no state change. A deterministic guard turns `LOW_RISK` into `INSUFFICIENT_EVIDENCE` unless there are 2+ items from 2+ reporters and confidence is not `LOW`. Higher-risk verdicts are never softened.
-
-**Enforced by code:** validation, identity, duplicates, limits, access control, append-only history, band consistency, the LOW_RISK guard, staleness/digest-match facts. **Depends on the LLM:** score, class, explanation, mitigations, judging reliability and contradictions.
-
-**Prompt injection.** Rules come first and say evidence cannot change them; evidence is JSON-encoded inside a digest-derived boundary (stripped from the text), never spliced as plain text; model output must pass schema checks; LOW_RISK needs corroboration. Residual risk: coordinated multi-reporter manipulation or a model steered toward a higher class. Only live tests can measure real resistance.
-
-## Score bands
-
-| Class | Score |
-|---|---|
-| LOW_RISK | 0-19 |
-| MEDIUM_RISK | 20-39 |
-| HIGH_RISK | 40-69 |
-| CRITICAL_RISK | 70-100 |
-| INSUFFICIENT_EVIDENCE | n/a (stored 0, `score_applicable=false`), a separate state |
-| UNASSESSED | registry status before any assessment |
-
-## Public methods
-
-Writes (all `@gl.public.write`)
-| Method | Who |
-|---|---|
-| `register_artifact(artifact_type, name, ecosystem, source_ref, version, digest_sha256)` | anyone (`digest_sha256=""` allowed) |
-| `submit_evidence(artifact_id, evidence_type, source_ref, content_digest_sha256, description, observed_at, assessment_refs)` | anyone |
-| `assess_artifact(artifact_id, reason)` | anyone (needs new evidence) |
-| `update_source_ref(artifact_id, new_source_ref)` | owner only |
-
-Views: `compute_artifact_id(type, name, ecosystem, version, digest)`, `get_artifact_count()`, `list_artifact_ids(offset, limit)` (returns `{"total", "items"}`), `get_artifact(id)`, `get_risk(id)`, `get_current_assessment(id)`, `get_assessment_history(id, offset, limit)`, `get_evidence_page(id, offset, limit)` (paged views return `{"total": n, "items": [...]}`). `limit` is 1-20; `offset` 0..total.
-
-Artifact types: `NPM_PACKAGE, PYTHON_PACKAGE, GIT_REPOSITORY, SMART_CONTRACT_DEPENDENCY, AI_MODEL, MODEL_DATASET, BUILD_ARTIFACT`.
-Evidence types: `SECURITY_ADVISORY, SOURCE_REVIEW, SCAN_REPORT, PROVENANCE_ATTESTATION, DIGEST_COMPARISON, MAINTAINER_CLAIM, BEHAVIOR_OBSERVATION, MODEL_CARD, OTHER`. `source_ref` must be `https://`, `git+https://`, `ipfs://`, `ar://` or `npm:`/`pypi:`/`cargo:`/`oci:`/`hf:`; no embedded credentials. `observed_at` is ISO-8601 and not in the future.
-
-Errors are `gl.vm.UserError` starting with: `[TG_INPUT]`, `[TG_DUPLICATE]`, `[TG_NOT_FOUND]`, `[TG_UNAUTHORIZED]`, `[TG_NO_NEW_EVIDENCE]`, `[TG_LIMIT]`, `[TG_PAGE]`.
-
-Records (JSON, returned as dicts). **Artifact:** `artifact_id, artifact_type, name, ecosystem, source_ref, version, digest_sha256, digest_status (SUPPLIED_UNVERIFIED|NOT_SUPPLIED), submitter, owner, registered_at, evidence_count, evidence_digest, assessment_count, current_classification, current_score, current_score_applicable, metadata_revision`. **Evidence:** `artifact_id, sequence, evidence_type, source_ref, content_digest_sha256, description, observed_at, reporter, submitted_at, assessment_refs, fingerprint, claims_unverified`. **Assessment:** `classification, previous_classification, score, score_applicable, confidence, explanation, warning_indicators, missing_information, mitigations, evidence_considered, reassessment_recommended, evidence_count_used, evidence_digest, requested_by, reason, assessed_at, method, prompt_version, disclaimer, sequence, artifact_id`.
-
-No administrator, override, delete or upgrade path exists, so no fake owner address is hard-coded.
-
-## Install and test
-
-```bash
-python3 -I tests/logic/test_trustguard_logic.py   # no GenLayer needed; fake SDK; logic only
-python3 -I -m py_compile contracts/trustguard.py  # syntax check
-wc -c contracts/trustguard.py                     # size check (must stay well under 20 KB)
-
-pip install -r requirements.txt                   # genlayer-test, pytest (Python >= 3.12)
-gltest tests/direct -v                            # Direct Mode, mocked LLM   (never run yet)
-TRUSTGUARD_LIVE=1 gltest tests/integration --network localnet -v   # real validators (never run yet)
+```
+cd frontend
+npm install
+npm run dev
 ```
 
-| Group | Real LLM | Live network | Proves consensus? |
-|---|---|---|---|
-| `tests/logic` | no | no | **no** |
-| `tests/direct` | no (mocked) | no | **no** |
-| `tests/integration` | yes | yes | partly |
+`npm test` runs the web app's unit tests. `npm run build` creates a static build.
 
-No official lint command was confirmed; check your `genlayer` CLI for one.
+## Run the contract tests
 
-## Example (genlayer-test client style)
-```python
-c = get_contract_factory("TrustGuard").deploy(args=[])
-c.register_artifact(args=["NPM_PACKAGE","left-pad","npm","https://registry.npmjs.org/left-pad","1.3.0",SHA256]).transact()
-aid = c.compute_artifact_id(args=["NPM_PACKAGE","left-pad","npm","1.3.0",SHA256]).call()
-c.submit_evidence(args=[aid,"SECURITY_ADVISORY","https://example.org/adv/1","",
-                        "Advisory reports install-script network access.","2026-09-01",[]]).transact()
-c.assess_artifact(args=[aid,"initial assessment"]).transact()
-c.get_current_assessment(args=[aid]).call()
 ```
-**New evidence + reassess:** `submit_evidence(...)` (optionally `assessment_refs=[n]`), then `assess_artifact(aid, "why")`. Earlier assessments stay readable through `get_assessment_history`.
+python3 -I tests/logic/test_trustguard_logic.py
+```
 
-## Deployment
-- **Network:** GenLayer Bradbury testnet
-- **Current contract:** `0xC571C9cbd33ABFF7AD1dB044a027c51E42fCC88c`, deployed from this repo's `contracts/trustguard.py` (19,039 bytes, constructor takes no arguments) with exact category and canonical-score binding. The source in this repo is the version the deployer reports deploying; the deployment itself was not independently checked against the source.
-- **Superseded (score within 5 points rule):** `0xE3Bf28739F5C32908E131359d24254bb96C99e0e`.
-- **Earlier deployments (records only, superseded):** `0x0ece7f3eaD96856477571a021c6939037c19Bd79` (leader called the LLM once; a reassessment failed on it) and `0xCa07AFeCa830987c572f2fE3A0802044433B153e` (added a leader retry, but validators accepted adjacent risk categories). Neither matches the current source.
+This runs against a fake SDK, so it shows the contract logic behaves as designed, not that it behaves the same on-chain. Direct Mode tests need `genlayer-test` (`gltest tests/direct -v`).
 
-Bradbury has a size limit near 20 KB. Re-run `wc -c contracts/trustguard.py` after any change; the margin is now small. For network selection, faucet and CLI flags, use the current GenLayer docs.
+## Honest status
 
-## Verifying digests independently
-A SHA-256 only proves bytes match a *trusted expected* digest, not safety. Get the expected digest from an independent trusted channel, hash your download yourself (`sha256sum f`, `shasum -a 256 f`, or `Get-FileHash -Algorithm SHA256 f`) and compare. The digest stored here is **user-supplied and unverified**.
-
-## Limitations
-- No external fetching; URLs are references only; reporter claims are unverified unless corroborated.
-- Anyone can fill the 40-item evidence cap (5 accounts x 8); mitigation is registering a new version.
-- After 16 assessments an artifact cannot be reassessed.
-- Staleness (365 days) is a heuristic; vulnerability data may be outdated. Time is the transaction datetime.
-- First registrant owns the record permanently (ownership affects only `source_ref`).
-- Consensus binds the persisted category and the persisted score exactly. The stored score is canonical per category, so it carries no finer resolution than the band. Free-text fields (explanation, warning indicators, missing information, mitigations), `evidence_considered` and `reassessment_recommended` are leader-authored: bounded and sanitised, but not validator-bound. Near band edges validators may fail to agree, in which case the transaction is not accepted and can be retried.
-- Free-text fields (`explanation`, `warning_indicators`, `missing_information`, `mitigations`) and `reassessment_recommended`, `evidence_considered` are written by the leader, bounded and sanitised, but not bound by validators. Treat them as advisory. `confidence` affects the stored category only through the `LOW_RISK` guard, which both sides apply.
-- Records as JSON strings are less strictly typed than the archived full version.
-- Real-runtime compatibility is unverified (see above).
-
-## Recorded results
-- `python tests/logic/test_trustguard_logic.py`: 83 passed (fake SDK, logic only).
-- `gltest tests/direct -v`: 8 passed (Direct Mode, mocked LLM).
-- Bradbury, current contract `0xC571...C88c`, one test artifact: assessment 0 (1 evidence item) gave HIGH_RISK, score 55; after more evidence, assessment 1 (2 items) gave HIGH_RISK, score 55 with `previous_classification: HIGH_RISK`. The earlier superseded contract `0xE3Bf...9e0e` gave MEDIUM_RISK 35 then HIGH_RISK 65. Both are `llm_consensus` and assessment 0 was preserved unchanged. See [TESTING.md](TESTING.md). One artifact, one run: this does not measure validator agreement rates.
-- Known weak test: `test_malformed_llm_output_reverts` only checks that some revert happens.
-- Model wording such as "independent reports" is the LLM's phrasing. The contract cannot verify independence; all reporter claims are stored as unverified.
+- The contract was assessed and reassessed on Bradbury on one test artifact. This says nothing about how often validators agree. See `TESTING.md`.
+- Evidence is never verified, digests are never checked, and nothing is scanned or executed. A risk result is a signal, not a guarantee of safety.
+- The web app reads finalized state only, so a new transaction can take a while to appear. Writes need a browser wallet.
+- The web app's write paths were built to the `genlayer-js` documented API; the contract's reads through the app were confirmed working.
